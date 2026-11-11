@@ -410,6 +410,7 @@ h1.btitle button:hover{background:var(--hover)}
   #sub{width:auto;flex-direction:row;align-items:center;gap:10px;padding:8px 12px;overflow-x:auto;overflow-y:hidden;border-right:0;border-bottom:1px solid var(--line)}
   #sub .nav button.on{border-bottom-color:var(--gold)}
 }
+#toast{z-index:100}
 .demo{background:var(--gold);color:#14251C;padding:6px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-weight:600}
 #auth{position:fixed;inset:0;display:none;z-index:60;background:var(--bg)}
 #auth.show{display:grid;grid-template-columns:1.1fr 1fr}
@@ -1714,29 +1715,42 @@ function showAuth(){
   else if(S.session&&S.hostOk===false)h=`<h2>No access</h2><div>${esc(S.session.user.email||'This account')} does not have access to TaskDesk at the moment. Ask your admin to add you, then sign in again.</div><button class="btn" data-act="hsignout">Sign out</button>`;
   else if(S.step==='email')h=`<h2>Sign in</h2><div class="sub">Enter your work email and we will send you a 6-digit code. No password needed.</div>
     <label class="fl" for="au-email">Work email<input class="addin" id="au-email" type="email" autocomplete="email" placeholder="name${DOMAIN}" value="${esc(S.email)}" data-enter="hsendcode"></label>
-    <button class="btn" data-act="hsendcode">${S.authBusy?'Sending…':'Send code'}</button><small class="sub">Only ${DOMAIN} addresses that your admin has added can sign in.</small>`;
+    <button class="btn" data-act="hsendcode">${S.authBusy?'Sending…':'Send code'}</button>${S.authErr?`<div class="note" role="alert">${esc(S.authErr)}</div>`:''}<small class="sub">Only ${DOMAIN} addresses that your admin has added can sign in.</small>`;
   else h=`<h2>Enter your code</h2><div class="sub">We sent a 6-digit code to <b>${esc(S.email)}</b>. It can take a minute to arrive.</div>
     <label class="fl" for="au-code">Code<input class="addin code" id="au-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" data-enter="hverify"></label>
     <button class="btn" data-act="hverify">${S.authBusy?'Checking…':'Verify and open TaskDesk'}</button>
-    <div class="rowb"><button class="ghost sm" data-act="hsendcode">Send a new code</button><button class="ghost sm" data-act="hotheremail">Use a different email</button></div>`;
+    <div class="rowb"><button class="ghost sm" data-act="hsendcode">Send a new code</button><button class="ghost sm" data-act="hotheremail">Use a different email</button></div>${S.authErr?`<div class="note" role="alert">${esc(S.authErr)}</div>`:''}`;
   a.innerHTML=stageHTML()+`<div class="door"><div class="cardx">${h}</div></div>`;
+}
+function authWhy(e,stage){
+  const m=String((e&&(e.message||e.error_description||e.msg))||e||''), c=String((e&&(e.code||e.status))||'');
+  let t=/rate limit|after \d+ seconds|too many/i.test(m)?'Too many codes were requested. Wait a minute, then try again.'
+    :/PGRST202|could not find the function|can_sign_in/i.test(m+c)?'The database is not set up in this Supabase project. Open the project whose URL is in config.js, then run supabase/schema.sql in its SQL Editor.'
+    :/invalid api key|no api key|jwt/i.test(m)?'The key in config.js does not match this Supabase project. Copy the anon / publishable key again from Project Settings, API.'
+    :/failed to fetch|networkerror|load failed/i.test(m)?'TaskDesk could not reach Supabase. Check the Project URL in config.js and your internet connection.'
+    :/error sending|smtp|mail/i.test(m)?'Supabase could not send the email. Check Authentication, SMTP settings: for a paid Zoho mailbox the host is usually smtppro.zoho.com, port 465, the username is the full mailbox address, the password is a Zoho app password, and the sender email must be that same mailbox.'
+    :/signups? not allowed|signup is disabled|disabled/i.test(m)?'New sign-ups are switched off in Supabase. Under Authentication, Sign In / Providers, turn on "Allow new users to sign up" and keep the Email provider enabled.'
+    :/hook/i.test(m)?'The sign-up hook returned an error. Under Authentication, Hooks, check that Before User Created points to the Postgres function public.hook_before_user_created.'
+    :/does not have access/i.test(m)?'This email does not have access to TaskDesk. Ask your admin to add you.'
+    :stage==='verify'?'That code is wrong or has expired. Ask for a new one.':'The code could not be sent.';
+  return t+(m?' (Details: '+m.slice(0,220)+')':'');
 }
 async function hostSendCode(){
   const i=$('#au-email'), email=(i?i.value:S.email).trim().toLowerCase(); if(S.authBusy)return;
   if(!/^[^\s@]+@[^\s@]+$/.test(email)){toast('Type your work email address.');return}
   if(!email.endsWith(DOMAIN)){toast('Use your '+DOMAIN+' email address.');return}
-  S.authBusy=true;S.email=email;showAuth();
+  S.authBusy=true;S.authErr='';S.email=email;showAuth();
   try{ const ok=await sb.rpc('can_sign_in',{p_email:email}); if(ok.error)throw ok.error;
-    if(!ok.data)toast('This email does not have access to TaskDesk. Ask your admin to add you.');
+    if(!ok.data)S.authErr='This email does not have access to TaskDesk. Ask your admin to add you.';
     else{ const r=await sb.auth.signInWithOtp({email,options:{shouldCreateUser:true}}); if(r.error)throw r.error; S.step='code'; toast('Code sent. Check your inbox.') }
-  }catch(e){toast(/rate|seconds/i.test((e&&e.message)||'')?'Please wait a minute before asking for another code.':'The code could not be sent. Check your connection and try again.')}
+  }catch(e){S.authErr=authWhy(e,'send');try{console.error('TaskDesk sign-in',e)}catch(x){}}
   S.authBusy=false;showAuth(); const c=$('#au-code'); if(c)c.focus();
 }
 async function hostVerify(){
   const code=(($('#au-code')||{}).value||'').replace(/\D/g,''); if(S.authBusy)return; if(code.length!==6){toast('Type the 6-digit code from the email.');return}
-  S.authBusy=true;showAuth();
-  const r=await sb.auth.verifyOtp({email:S.email,token:code,type:'email'}); S.authBusy=false;
-  if(r.error||!r.data||!r.data.session){toast('That code is wrong or has expired. Ask for a new one.');showAuth();return}
+  S.authBusy=true;S.authErr='';showAuth();
+  let r; try{r=await sb.auth.verifyOtp({email:S.email,token:code,type:'email'})}catch(e){r={error:e}} S.authBusy=false;
+  if(r.error||!r.data||!r.data.session){S.authErr=authWhy(r.error,'verify');showAuth();return}
   S.session=r.data.session; S.step='email'; await hostEnter();
 }
 async function hostStart(){
@@ -1811,7 +1825,7 @@ document.addEventListener('keydown',e=>{const k=e.target.dataset&&e.target.datas
 document.addEventListener('click',async e=>{
   const a=e.target.closest('[data-act]'); if(!a)return; const d=a.dataset,act=d.act; if(act[0]!=='h')return;
   if(act==='hdemo'){CFG.demo=true;hostStart()}
-  else if(act==='hsendcode')hostSendCode(); else if(act==='hverify')hostVerify(); else if(act==='hotheremail'){S.step='email';showAuth()}
+  else if(act==='hsendcode')hostSendCode(); else if(act==='hverify')hostVerify(); else if(act==='hotheremail'){S.step='email';S.authErr='';showAuth()}
   else if(act==='hsignout'){try{await sb.auth.signOut()}catch(x){} S.session=null;S.hostOk=undefined;S.step='email'; if(sb&&sb._demo){showAuth()}else location.reload()}
   else if(act==='hsendreq'){const title=$('#rq-title').value.trim(),to=$('#rq-to').value;if(!title||!to){toast('Choose a department and say what you need.');return}
     Store.put('requests',uid(),{title,details:$('#rq-det').value.trim(),priority:$('#rq-pr').value,wantedBy:$('#rq-by').value||'',to,from:S.myDept||'',byUid:S.auth.uid,byName:S.me,status:'waiting',reason:'',at:Date.now()});toast('Request sent to '+deptOf(to).name+'.');render()}
